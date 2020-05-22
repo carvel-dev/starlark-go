@@ -53,7 +53,7 @@ func (s *blockScanner) nextToken(outVal *tokenValue) Token {
 
 func (s *blockScanner) nextTokenInner() blockScannerToken {
 	if s.matchesNewBlock() {
-		return s.buildIndent(s.prevTokens[len(s.prevTokens)-1])
+		return s.buildIndent()
 	}
 
 	var currToken blockScannerToken
@@ -146,8 +146,8 @@ func (s *blockScanner) swallowNextToken(tok Token) {
 	}
 }
 
-func (s *blockScanner) buildIndent(token blockScannerToken) blockScannerToken {
-	s.indentStack = append(s.indentStack, token)
+func (s *blockScanner) buildIndent() blockScannerToken {
+	s.indentStack = append(s.indentStack, s.prevTokens[len(s.prevTokens)-1])
 	return blockScannerToken{
 		tok: Token(INDENT),
 		val: tokenValue{pos: s.prevTokens[len(s.prevTokens)-1].val.pos},
@@ -155,7 +155,7 @@ func (s *blockScanner) buildIndent(token blockScannerToken) blockScannerToken {
 }
 
 func (s *blockScanner) buildOutdent() blockScannerToken {
-	if len(s.indentStack) < 1 {
+	if len(s.indentStack) == 0 {
 		s.error(s.getPos(), "unexpected end")
 	}
 	s.indentStack = s.indentStack[:len(s.indentStack)-1]
