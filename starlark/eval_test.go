@@ -703,3 +703,89 @@ func TestUnpackErrorBadType(t *testing.T) {
 		}
 	}
 }
+
+// Regression test for github.com/google/starlark-go/issues/233.
+func TestREPLChunk(t *testing.T) {
+	thread := new(starlark.Thread)
+	globals := make(starlark.StringDict)
+	exec := func(src string) {
+		f, err := syntax.Parse("<repl>", src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := starlark.ExecREPLChunk(f, thread, globals); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	exec("x = 0; y = 0")
+	if got, want := fmt.Sprintf("%v %v", globals["x"], globals["y"]), "0 0"; got != want {
+		t.Fatalf("chunk1: got %s, want %s", got, want)
+	}
+
+	exec("x += 1; y = y + 1")
+	if got, want := fmt.Sprintf("%v %v", globals["x"], globals["y"]), "1 1"; got != want {
+		t.Fatalf("chunk2: got %s, want %s", got, want)
+	}
+}
+
+func TestCancel(t *testing.T) {
+	// A thread cancelled before it begins executes no code.
+	{
+		thread := new(starlark.Thread)
+		thread.Cancel("nope")
+		_, err := starlark.ExecFile(thread, "precancel.star", `x = 1//0`, nil)
+		if fmt.Sprint(err) != "Starlark computation cancelled: nope" {
+			t.Errorf("execution returned error %q, want cancellation", err)
+		}
+
+		// cancellation is sticky
+		_, err = starlark.ExecFile(thread, "precancel.star", `x = 1//0`, nil)
+		if fmt.Sprint(err) != "Starlark computation cancelled: nope" {
+			t.Errorf("execution returned error %q, want cancellation", err)
+		}
+	}
+	// A thread cancelled during a built-in executes no more code.
+	{
+		thread := new(starlark.Thread)
+		predeclared := starlark.StringDict{
+			"stopit": starlark.NewBuiltin("stopit", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+				thread.Cancel(fmt.Sprint(args[0]))
+				return starlark.None, nil
+			}),
+		}
+		_, err := starlark.ExecFile(thread, "stopit.star", `msg = 'nope'; stopit(msg); x = 1//0`, predeclared)
+		if fmt.Sprint(err) != `Starlark computation cancelled: "nope"` {
+			t.Errorf("execution returned error %q, want cancellation", err)
+		}
+	}
+}
+
+func TestExecutionSteps(t *testing.T) {
+	// A Thread records the number of computation steps.
+	thread := new(starlark.Thread)
+	countSteps := func(n int) (uint64, error) {
+		predeclared := starlark.StringDict{"n": starlark.MakeInt(n)}
+		steps0 := thread.ExecutionSteps()
+		_, err := starlark.ExecFile(thread, "steps.star", `squares = [x*x for x in range(n)]`, predeclared)
+		return thread.ExecutionSteps() - steps0, err
+	}
+	steps100, err := countSteps(1000)
+	if err != nil {
+		t.Errorf("execution failed: %v", err)
+	}
+	steps10000, err := countSteps(100000)
+	if err != nil {
+		t.Errorf("execution failed: %v", err)
+	}
+	if ratio := float64(steps10000) / float64(steps100); ratio < 99 || ratio > 101 {
+		t.Errorf("computation steps did not increase linearly: f(100)=%d, f(10000)=%d, ratio=%g, want ~100", steps100, steps10000, ratio)
+	}
+
+	// Exceeding the step limit causes cancellation.
+	thread.SetMaxExecutionSteps(1000)
+	_, err = countSteps(1000)
+	if fmt.Sprint(err) != "Starlark computation cancelled: too many steps" {
+		t.Errorf("execution returned error %q, want cancellation", err)
+	}
+}
